@@ -1,11 +1,11 @@
 # ============================================================
 # BRUCE-STYLE EXISTENTIAL–ARCHITECTURAL AGENT SIMULATION
-# Updated per OmniLink’s scoring recommendations + speed-up tuning:
-# - Boundary term weighted more heavily (0.9).
-# - Score computed from the *requested* pose.
+# Updated per OmniLink’s scoring email:
+# - boundary_target set to 5.0 so the wall is the attractor.
+# - Score computed from the *requested* pose (not clamped).
 # - Probe range increased.
 # - Center-bias weakened.
-# - Boundary-seek amplified.
+# - Boundary-seek amplified (1.2x overshoot).
 # ============================================================
 
 import time
@@ -112,9 +112,9 @@ class SimulationEnv:
 
     def score(self, requested_state: Dict[str, Any]) -> float:
         """
-        OmniLink fix + speed-up tuning:
+        OmniLink email:
         - Score the *requested* pose (not clamped).
-        - Boundary weight increased to 0.9.
+        - boundary_target = 5.0 so the wall itself is the attractor.
         """
 
         x = requested_state["x"]
@@ -123,13 +123,13 @@ class SimulationEnv:
         # Center preference
         center_term = 1.0 - (abs(x) + abs(y)) / 10.0
 
-        # Boundary preference
-        boundary_target = 4.5
+        # Boundary preference (wall as target)
+        boundary_target = 5.0
         boundary_term = 1.0 - (
             abs(abs(x) - boundary_target) + abs(abs(y) - boundary_target)
         ) / 10.0
 
-        # Strong outward bias
+        # Strong outward bias (0.9 boundary, 0.1 center)
         blended = 0.1 * center_term + 0.9 * boundary_term
 
         return max(0.0, min(1.0, blended))
@@ -185,7 +185,7 @@ class ActionGenerator:
             },
         })
 
-        # Boundary seek (amplified)
+        # Boundary seek (amplified, 1.2x overshoot)
         bx = constraints["max_x"] if state["x"] >= 0 else constraints["min_x"]
         by = constraints["max_y"] if state["y"] >= 0 else constraints["min_y"]
 
@@ -250,7 +250,7 @@ class BruceAgent:
 
         feedback = self.env.act(best_action)
 
-        # Score the *requested* pose
+        # Score the *requested* pose (not the clamped final pose)
         requested_pose = {
             "x": state["x"] + best_action["params"].get("dx", 0.0),
             "y": state["y"] + best_action["params"].get("dy", 0.0),
@@ -289,7 +289,7 @@ class BruceAgent:
         print(f"  Intervention Time: {feedback['intervention_time']}")
         print(f"  Recovery State: {feedback['recovery_state']}")
         print(f"  Final Pose: {feedback['final_pose']}")
-        print(f"Score: {score:.4f}")
+        print(f"Score (requested pose): {score:.4f}")
         print("========================")
 
     def _record_history(self, state, constraints, action, feedback, score):
@@ -313,6 +313,11 @@ if __name__ == "__main__":
 
     print("Running Bruce-style existential agent simulation...\n")
 
-    for _ in range(50):
-        agent.step()
-        time.sleep(0.1)
+    try:
+        for _ in range(50):
+            agent.step()
+            time.sleep(0.1)
+    except Exception as e:
+        print("ERROR:", e)
+
+    input("Press Enter to exit...")
