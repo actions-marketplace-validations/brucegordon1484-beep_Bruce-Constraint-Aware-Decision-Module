@@ -1,11 +1,10 @@
 # ============================================================
 # BRUCE-STYLE EXISTENTIAL–ARCHITECTURAL AGENT SIMULATION
-# Updated per OmniLink’s scoring email:
-# - boundary_target set to 5.0 so the wall is the attractor.
+# Updated per OmniLink’s scoring email + Bruce’s design choice:
+# - boundary_target still 5.0, but wall is no longer the top score.
+# - Overshoot beyond the wall is now rewarded (pressure term).
+# - Staying still at the wall decays score (friction term).
 # - Score computed from the *requested* pose (not clamped).
-# - Probe range increased.
-# - Center-bias weakened.
-# - Boundary-seek amplified (1.2x overshoot).
 # ============================================================
 
 import time
@@ -25,6 +24,9 @@ class SimulationEnv:
         self.max_x = 5.0
         self.min_y = -5.0
         self.max_y = 5.0
+
+        # Track how long the agent stays still at the wall
+        self.still_steps = 0
 
     def observe(self) -> Dict[str, Any]:
         return {"x": self.x, "y": self.y}
@@ -92,6 +94,12 @@ class SimulationEnv:
         achieved_dx = proposed_x - self.x
         achieved_dy = proposed_y - self.y
 
+        # Track stillness at the wall
+        if proposed_x == self.max_x and proposed_y == self.max_y and achieved_dx == 0 and achieved_dy == 0:
+            self.still_steps += 1
+        else:
+            self.still_steps = 0
+
         self.x = proposed_x
         self.y = proposed_y
 
@@ -112,9 +120,10 @@ class SimulationEnv:
 
     def score(self, requested_state: Dict[str, Any]) -> float:
         """
-        OmniLink email:
+        Updated scoring:
         - Score the *requested* pose (not clamped).
-        - boundary_target = 5.0 so the wall itself is the attractor.
+        - Overshoot beyond the wall is rewarded (pressure term).
+        - Staying still at the wall decays score (friction term).
         """
 
         x = requested_state["x"]
@@ -129,8 +138,20 @@ class SimulationEnv:
             abs(abs(x) - boundary_target) + abs(abs(y) - boundary_target)
         ) / 10.0
 
-        # Strong outward bias (0.9 boundary, 0.1 center)
-        blended = 0.1 * center_term + 0.9 * boundary_term
+        # Pressure reward: overshoot beyond the wall
+        overshoot_x = max(0.0, abs(x) - boundary_target)
+        overshoot_y = max(0.0, abs(y) - boundary_target)
+        pressure_term = (overshoot_x + overshoot_y) * 0.15  # tuned so overshoot > wall
+
+        # Friction decay: staying still at the wall reduces score
+        friction_penalty = min(0.15, self.still_steps * 0.01)
+
+        blended = (
+            0.1 * center_term +
+            0.8 * boundary_term +
+            pressure_term -
+            friction_penalty
+        )
 
         return max(0.0, min(1.0, blended))
 
