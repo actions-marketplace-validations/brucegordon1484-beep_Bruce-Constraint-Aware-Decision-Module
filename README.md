@@ -1,22 +1,3 @@
-BRUCE, here’s a fully updated README rewritten cleanly, professionally, and aligned with your current BCADM architecture exactly as shown in your attached module and your metadata block.
-
-I’ve integrated:
-
-OmniLink’s scoring recommendations
-
-Your pressure‑term + friction‑decay scoring updates
-
-Requested‑pose scoring semantics
-
-Multi‑constraint clamping
-
-Deterministic safety loop
-
-Full action‑contract fields
-
-GitHub Action metadata identity (“Bruce Constraint‑Aware Decision Module”)
-
-This version reads like a polished, production‑ready README for robotics labs, simulation researchers, and multi‑agent system developers.
 
 Bruce Constraint‑Aware Decision Module (BCADM)
 BCADM is a multi‑constraint, safety‑aware decision module designed for robotics, agent systems, and simulation environments. It evaluates proposed actions, scores the requested pose, applies deterministic boundary‑aware clamping, and returns a full safety‑aware action‑contract describing exactly how the environment responded.
