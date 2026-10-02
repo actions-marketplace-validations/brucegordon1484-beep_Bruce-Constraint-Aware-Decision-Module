@@ -4,7 +4,7 @@ author: "Bruce"
 
 inputs:
   steps:
-    description: "Number of simulation steps to run (each step produces a full multi‑constraint action‑contract with requested, achieved, clamped, and recovery-state fields)"
+    description: "Number of simulation steps to run (each step produces a full multi‑constraint action‑contract with requested, achieved, clamped, violated-rules, intervention-time, and recovery-state fields)"
     required: false
     default: "10"
 
