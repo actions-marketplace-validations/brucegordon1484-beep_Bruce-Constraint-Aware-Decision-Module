@@ -1,17 +1,11 @@
-"""
-BRUCE-STYLE EXISTENTIAL–ARCHITECTURAL AGENT SIMULATION
-Run this file to watch the agent behave inside a virtual world.
-
-This version incorporates OmniLink’s observations:
-
-- Multi-constraint reporting is preserved exactly:
-  * violated_rules holds all fired rules.
-  * violated_rule holds the last fired rule (backward-compatible).
-- intervention_time is only stamped when an actual intervention occurs (modified == True).
-- recovery_state is meaningful and branchable, reflecting which axes were clamped.
-- The decision loop is adjusted so the contract is exercised in normal operation,
-  instead of only under external probing, while still keeping a structural bias.
-"""
+# ============================================================
+# BRUCE-STYLE EXISTENTIAL–ARCHITECTURAL AGENT SIMULATION
+# Updated per OmniLink’s scoring email + Bruce’s design choice:
+# - boundary_target still 5.0, but wall is no longer the top score.
+# - Overshoot beyond the wall is now rewarded (pressure term).
+# - Staying still at the wall decays score (friction term).
+# - Score computed from the *requested* pose (not clamped).
+# ============================================================
 
 import time
 import random
@@ -23,18 +17,16 @@ from typing import Dict, Any, List, Optional
 # ============================================================
 
 class SimulationEnv:
-    """
-    A simple 2D world where the agent moves, probes boundaries,
-    and learns structural patterns.
-    """
-
     def __init__(self) -> None:
-        self.x: float = 0.0
-        self.y: float = 0.0
-        self.min_x: float = -5.0
-        self.max_x: float = 5.0
-        self.min_y: float = -5.0
-        self.max_y: float = 5.0
+        self.x = 0.0
+        self.y = 0.0
+        self.min_x = -5.0
+        self.max_x = 5.0
+        self.min_y = -5.0
+        self.max_y = 5.0
+
+        # Track how long the agent stays still at the wall
+        self.still_steps = 0
 
     def observe(self) -> Dict[str, Any]:
         return {"x": self.x, "y": self.y}
@@ -47,19 +39,7 @@ class SimulationEnv:
             "max_y": self.max_y,
         }
 
-    def _compute_recovery_state(
-        self,
-        modified: bool,
-        violated_rules: List[str],
-    ) -> Dict[str, Any]:
-        """
-        recovery_state is now branchable:
-
-        - safe: True when no modification occurred.
-        - status: 'within_bounds' or 'clamped'.
-        - clamped_axes: subset of ['x', 'y'] indicating which axes were clamped.
-        """
-
+    def _compute_recovery_state(self, modified: bool, violated_rules: List[str]) -> Dict[str, Any]:
         if not modified:
             return {
                 "safe": True,
@@ -67,7 +47,7 @@ class SimulationEnv:
                 "clamped_axes": [],
             }
 
-        clamped_axes: List[str] = []
+        clamped_axes = []
         if any(r in ("min_x_boundary", "max_x_boundary") for r in violated_rules):
             clamped_axes.append("x")
         if any(r in ("min_y_boundary", "max_y_boundary") for r in violated_rules):
@@ -80,15 +60,14 @@ class SimulationEnv:
         }
 
     def act(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        requested_dx: float = action["params"].get("dx", 0.0)
-        requested_dy: float = action["params"].get("dy", 0.0)
+        requested_dx = action["params"].get("dx", 0.0)
+        requested_dy = action["params"].get("dy", 0.0)
 
-        proposed_x: float = self.x + requested_dx
-        proposed_y: float = self.y + requested_dy
+        proposed_x = self.x + requested_dx
+        proposed_y = self.y + requested_dy
 
-        violated_rules: List[str] = []
-        violated_rule: Optional[str] = None
-        modified: bool = False
+        violated_rules = []
+        modified = False
 
         # Clamp X
         if proposed_x < self.min_x:
@@ -110,23 +89,23 @@ class SimulationEnv:
             violated_rules.append("max_y_boundary")
             modified = True
 
-        # Backward compatibility: last rule wins
         violated_rule = violated_rules[-1] if violated_rules else None
 
-        achieved_dx: float = proposed_x - self.x
-        achieved_dy: float = proposed_y - self.y
+        achieved_dx = proposed_x - self.x
+        achieved_dy = proposed_y - self.y
 
-        # Update state
+        # Track stillness at the wall
+        if proposed_x == self.max_x and proposed_y == self.max_y and achieved_dx == 0 and achieved_dy == 0:
+            self.still_steps += 1
+        else:
+            self.still_steps = 0
+
         self.x = proposed_x
         self.y = proposed_y
 
-        # Only stamp intervention_time when an intervention actually occurred
-        intervention_time: Optional[float] = time.time() if modified else None
+        intervention_time = time.time() if modified else None
 
-        recovery_state: Dict[str, Any] = self._compute_recovery_state(
-            modified=modified,
-            violated_rules=violated_rules,
-        )
+        recovery_state = self._compute_recovery_state(modified, violated_rules)
 
         return {
             "requested": {"dx": requested_dx, "dy": requested_dy},
@@ -139,38 +118,41 @@ class SimulationEnv:
             "final_pose": {"x": self.x, "y": self.y},
         }
 
-    def score(self, state: Dict[str, Any]) -> float:
+    def score(self, requested_state: Dict[str, Any]) -> float:
         """
-        Original env.score rewarded proximity to the origin, causing:
-        - No movement from the origin.
-        - Collapse from (4.5, 4.5) back to the centre.
-        - The contract never being exercised.
-
-        This scoring function balances:
-        - Proximity to the origin (structural stability).
-        - Proximity to the ±4.5 boundary (constraint exercise).
-
-        Result: the agent has reason to both stay structurally sane
-        and to approach the boundary, so modified can become True
-        in normal operation.
+        Updated scoring:
+        - Score the *requested* pose (not clamped).
+        - Overshoot beyond the wall is rewarded (pressure term).
+        - Staying still at the wall decays score (friction term).
         """
 
-        x = state["x"]
-        y = state["y"]
+        x = requested_state["x"]
+        y = requested_state["y"]
 
         # Center preference
         center_term = 1.0 - (abs(x) + abs(y)) / 10.0
 
-        # Boundary preference around ±4.5
-        boundary_target = 4.5
+        # Boundary preference (wall as target)
+        boundary_target = 5.0
         boundary_term = 1.0 - (
             abs(abs(x) - boundary_target) + abs(abs(y) - boundary_target)
         ) / 10.0
 
-        # Blend: both center and boundary are structurally interesting
-        blended = 0.5 * center_term + 0.5 * boundary_term
+        # Pressure reward: overshoot beyond the wall
+        overshoot_x = max(0.0, abs(x) - boundary_target)
+        overshoot_y = max(0.0, abs(y) - boundary_target)
+        pressure_term = (overshoot_x + overshoot_y) * 0.15  # tuned so overshoot > wall
 
-        # Clamp score to [0.0, 1.0]
+        # Friction decay: staying still at the wall reduces score
+        friction_penalty = min(0.15, self.still_steps * 0.01)
+
+        blended = (
+            0.1 * center_term +
+            0.8 * boundary_term +
+            pressure_term -
+            friction_penalty
+        )
+
         return max(0.0, min(1.0, blended))
 
 
@@ -180,9 +162,9 @@ class SimulationEnv:
 
 class WorldModel:
     def __init__(self) -> None:
-        self.constraints: Dict[str, Any] = {}
-        self.patterns: List[Dict[str, Any]] = []
-        self.questions: List[str] = []
+        self.constraints = {}
+        self.patterns = []
+        self.questions = []
 
     def update(self, state: Dict[str, Any], constraints: Dict[str, Any]) -> None:
         self.constraints = dict(constraints)
@@ -203,52 +185,38 @@ class WorldModel:
 # ============================================================
 
 class ActionGenerator:
-    def propose(
-        self,
-        state: Dict[str, Any],
-        constraints: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        actions: List[Dict[str, Any]] = []
+    def propose(self, state: Dict[str, Any], constraints: Dict[str, Any]) -> List[Dict[str, Any]]:
+        actions = []
 
-        # Probe boundaries (local stochastic exploration)
-        actions.append(
-            {
-                "type": "probe",
-                "params": {
-                    "dx": random.uniform(-0.3, 0.3),
-                    "dy": random.uniform(-0.3, 0.3),
-                },
-            }
-        )
+        # Probe (stronger outward randomness)
+        actions.append({
+            "type": "probe",
+            "params": {
+                "dx": random.uniform(-0.5, 0.5),
+                "dy": random.uniform(-0.5, 0.5),
+            },
+        })
 
-        # Move toward center (structural stability)
-        cx = -state["x"] * 0.1
-        cy = -state["y"] * 0.1
+        # Center bias (weaker inward pull)
+        actions.append({
+            "type": "center_bias",
+            "params": {
+                "dx": -state["x"] * 0.05,
+                "dy": -state["y"] * 0.05,
+            },
+        })
 
-        actions.append(
-            {
-                "type": "center_bias",
-                "params": {
-                    "dx": cx,
-                    "dy": cy,
-                },
-            }
-        )
+        # Boundary seek (amplified, 1.2x overshoot)
+        bx = constraints["max_x"] if state["x"] >= 0 else constraints["min_x"]
+        by = constraints["max_y"] if state["y"] >= 0 else constraints["min_y"]
 
-        # Explicit boundary-seeking action to guarantee contract exercise:
-        # push toward the nearest boundary in each axis.
-        bx = constraints["max_x"] if state["x"] >= 0.0 else constraints["min_x"]
-        by = constraints["max_y"] if state["y"] >= 0.0 else constraints["min_y"]
-
-        actions.append(
-            {
-                "type": "boundary_seek",
-                "params": {
-                    "dx": bx - state["x"],
-                    "dy": by - state["y"],
-                },
-            }
-        )
+        actions.append({
+            "type": "boundary_seek",
+            "params": {
+                "dx": (bx - state["x"]) * 1.2,
+                "dy": (by - state["y"]) * 1.2,
+            },
+        })
 
         return actions
 
@@ -258,47 +226,24 @@ class ActionGenerator:
 # ============================================================
 
 class ActionSelector:
-    def select(
-        self,
-        actions: List[Dict[str, Any]],
-        state: Dict[str, Any],
-        constraints: Dict[str, Any],
-        env: SimulationEnv,
-    ) -> Dict[str, Any]:
-        best_action: Optional[Dict[str, Any]] = None
-        best_score: float = -999.0
+    def select(self, actions, state, constraints, env):
+        best_action = None
+        best_score = -999.0
 
         for action in actions:
-            simulated = self.simulate(action, state, constraints)
+            simulated = self.simulate_requested(action, state)
             score = env.score(simulated)
 
             if score > best_score:
                 best_score = score
                 best_action = action
 
-        # Fallback: should never happen, but keep it tight.
-        if best_action is None:
-            best_action = {
-                "type": "noop",
-                "params": {"dx": 0.0, "dy": 0.0},
-            }
-
         return best_action
 
-    def simulate(
-        self,
-        action: Dict[str, Any],
-        state: Dict[str, Any],
-        constraints: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    def simulate_requested(self, action, state):
         new = dict(state)
         new["x"] += action["params"].get("dx", 0.0)
         new["y"] += action["params"].get("dy", 0.0)
-
-        # Apply the same clamping logic as the environment
-        new["x"] = max(constraints["min_x"], min(constraints["max_x"], new["x"]))
-        new["y"] = max(constraints["min_y"], min(constraints["max_y"], new["y"]))
-
         return new
 
 
@@ -307,14 +252,14 @@ class ActionSelector:
 # ============================================================
 
 class BruceAgent:
-    def __init__(self, env: SimulationEnv) -> None:
+    def __init__(self, env):
         self.env = env
         self.model = WorldModel()
         self.generator = ActionGenerator()
         self.selector = ActionSelector()
-        self.history: List[Dict[str, Any]] = []
+        self.history = []
 
-    def step(self) -> None:
+    def step(self):
         state = self.env.observe()
         constraints = self.env.constraints()
 
@@ -325,16 +270,18 @@ class BruceAgent:
         best_action = self.selector.select(actions, state, constraints, self.env)
 
         feedback = self.env.act(best_action)
-        score = self.env.score(feedback["final_pose"])
+
+        # Score the *requested* pose (not the clamped final pose)
+        requested_pose = {
+            "x": state["x"] + best_action["params"].get("dx", 0.0),
+            "y": state["y"] + best_action["params"].get("dy", 0.0),
+        }
+        score = self.env.score(requested_pose)
 
         self._log(state, constraints, questions, best_action, feedback, score)
         self._record_history(state, constraints, best_action, feedback, score)
 
-    def _generate_questions(
-        self,
-        state: Dict[str, Any],
-        constraints: Dict[str, Any],
-    ) -> List[str]:
+    def _generate_questions(self, state, constraints):
         qs = [
             "What boundary am I closest to?",
             "What happens if I push the constraint edge?",
@@ -342,21 +289,11 @@ class BruceAgent:
             "How does the environment respond to probing?",
             "What assumption about the world can be tested next?",
         ]
-
         for q in qs:
             self.model.add_question(q)
-
         return qs
 
-    def _log(
-        self,
-        state: Dict[str, Any],
-        constraints: Dict[str, Any],
-        questions: List[str],
-        action: Dict[str, Any],
-        feedback: Dict[str, Any],
-        score: float,
-    ) -> None:
+    def _log(self, state, constraints, questions, action, feedback, score):
         print("\n=== SIMULATION STEP ===")
         print(f"State: {state}")
         print(f"Constraints: {constraints}")
@@ -373,27 +310,18 @@ class BruceAgent:
         print(f"  Intervention Time: {feedback['intervention_time']}")
         print(f"  Recovery State: {feedback['recovery_state']}")
         print(f"  Final Pose: {feedback['final_pose']}")
-        print(f"Score: {score:.4f}")
+        print(f"Score (requested pose): {score:.4f}")
         print("========================")
 
-    def _record_history(
-        self,
-        state: Dict[str, Any],
-        constraints: Dict[str, Any],
-        action: Dict[str, Any],
-        feedback: Dict[str, Any],
-        score: float,
-    ) -> None:
-        self.history.append(
-            {
-                "timestamp": time.time(),
-                "state": dict(state),
-                "constraints": dict(constraints),
-                "action": dict(action),
-                "feedback": dict(feedback),
-                "score": score,
-            }
-        )
+    def _record_history(self, state, constraints, action, feedback, score):
+        self.history.append({
+            "timestamp": time.time(),
+            "state": dict(state),
+            "constraints": dict(constraints),
+            "action": dict(action),
+            "feedback": dict(feedback),
+            "score": score,
+        })
 
 
 # ============================================================
@@ -406,6 +334,11 @@ if __name__ == "__main__":
 
     print("Running Bruce-style existential agent simulation...\n")
 
-    for _ in range(50):
-        agent.step()
-        time.sleep(0.1)
+    try:
+        for _ in range(50):
+            agent.step()
+            time.sleep(0.1)
+    except Exception as e:
+        print("ERROR:", e)
+
+    input("Press Enter to exit...")
