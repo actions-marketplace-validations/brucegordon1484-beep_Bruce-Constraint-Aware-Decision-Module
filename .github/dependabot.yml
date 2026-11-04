@@ -1,0 +1,34 @@
+version: 2
+updates:
+  # Python dependencies for BCADM core, simulation engine, constraint engine, MCP server
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      bcadm-core:
+        patterns:
+          - "bcadm*"
+      bcadm-simulation:
+        patterns:
+          - "simulation*"
+      bcadm-constraints:
+        patterns:
+          - "constraint*"
+      bcadm-mcp:
+        patterns:
+          - "mcp*"
+      pip-all:
+        patterns:
+          - "*"
+
+  # GitHub Actions workflows (CI, linting, testing)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    groups:
+      gha-all:
+        patterns:
+          - "*"
+
